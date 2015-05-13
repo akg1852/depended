@@ -1,10 +1,11 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-import qualified Data.Map as Map
 import Control.Monad
 import Control.Applicative
 import System.IO
-import qualified Data.Text as Text
+import qualified Data.HashMap.Strict as HM
+import qualified Data.Text as T
+import qualified Data.Vector as Vector
 import qualified Data.ByteString.Char8 as Char8
 import qualified Data.ByteString.Lazy.Char8 as LazyChar8
 import qualified Data.Aeson as JSON
@@ -13,17 +14,26 @@ import Network.HTTP.Conduit
 
 -- json
 
-type JObject = Map.Map String JSON.Value
+type JObject = HM.HashMap T.Text JSON.Value
 
-parseJSON :: LazyChar8.ByteString -> JObject
-parseJSON json = case JSON.decode json of
+parseJSON :: LazyChar8.ByteString -> JSON.Value
+parseJSON s = case JSON.decode s of
     Just x -> x
-    Nothing -> error "invalid json object"
-parseJSONstring = parseJSON . LazyChar8.pack
+    _ -> error "invalid json"
+    
+jObject :: JSON.Value -> JObject
+jObject v = case v of
+    JSON.Object x -> x
+    _ -> error "invalid json object"
+    
+jArray :: JSON.Value -> Vector.Vector JSON.Value
+jArray v = case v of
+    JSON.Array x -> x
+    _ -> error "invalid json array"
 
 jLookupString :: String -> JObject -> Maybe String
-jLookupString key jObject = case Map.lookup key jObject of
-    Just (JSON.String v) -> Just (Text.unpack v)
+jLookupString key jObject = case HM.lookup (T.pack key) jObject of
+    Just (JSON.String v) -> Just (T.unpack v)
     _ -> Nothing
 
 
@@ -32,7 +42,7 @@ jLookupString key jObject = case Map.lookup key jObject of
 config :: IO JObject
 config = do
     file <- readFile "config.json"
-    return $ parseJSONstring file
+    return . jObject . parseJSON . LazyChar8.pack $ file
 
 
 -- repositories & projects
@@ -75,7 +85,7 @@ getRepoData repo branch = do
             }
         ])
 
-githubRequest :: String -> IO JObject
+githubRequest :: String -> IO LazyChar8.ByteString
 githubRequest request = do
     c <- config
     let Just githubUrl = jLookupString "githubUrl" c
@@ -90,7 +100,7 @@ githubRequest request = do
                     }
     withManager $ \manager -> do
         response <- httpLbs request manager
-        return . parseJSON $ responseBody response
+        return $ responseBody response
 
 
 -- database
