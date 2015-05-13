@@ -31,9 +31,9 @@ jArray v = case v of
     JSON.Array x -> x
     _ -> error "invalid json array"
 
-jLookupString :: String -> JObject -> Maybe String
-jLookupString key jObject = case HM.lookup (T.pack key) jObject of
-    Just (JSON.String v) -> Just (T.unpack v)
+jLookupString :: T.Text -> JObject -> Maybe T.Text
+jLookupString key jObject = case HM.lookup key jObject of
+    Just (JSON.String v) -> Just v
     _ -> Nothing
 
 
@@ -85,17 +85,17 @@ getRepoData repo branch = do
             }
         ])
 
-githubRequest :: String -> IO LazyChar8.ByteString
+githubRequest :: T.Text -> IO LazyChar8.ByteString
 githubRequest request = do
     c <- config
     let Just githubUrl = jLookupString "githubUrl" c
     let Just githubToken = jLookupString "githubToken" c
 
-    r <- parseUrl (githubUrl ++ request)
+    r <- parseUrl . T.unpack $ T.append githubUrl request
     let request = r { method = "GET" 
                     , requestHeaders =
                         [ ("User-Agent", "depended")
-                        , ("Authorization", Char8.pack ("token " ++ githubToken))
+                        , ("Authorization", Char8.pack ("token " ++ (T.unpack githubToken)))
                         ]
                     }
     withManager $ \manager -> do
@@ -123,7 +123,7 @@ main = do
     -- update db
     -- for each project (for which we want results), get reverse-dependencies, trace them back to deployables
     -- display results
-    repoData <- getRepoData "git@github.server.com:XYZ/ABC.git" "master"
+    repoData <- getRepoData "XYZ/ABC" "master"
     writeFile "fakeDB" ""
     mapM_ updateDB repoData
     output <- readFile "fakeDB"
