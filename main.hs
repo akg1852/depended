@@ -11,6 +11,8 @@ import qualified Data.ByteString.Lazy.Char8 as LazyChar8
 import qualified Data.Aeson as JSON
 import Text.XML.Light as XML (parseXML)
 import Network.HTTP.Conduit
+import Database.SQLite.Simple
+import Database.SQLite.Simple.FromRow
 
 -- json
 
@@ -47,17 +49,29 @@ config = do
 
 -- repositories & projects
 
-data ProjData = ProjData
-    { projName :: String
-    , projRepo :: String
-    , projRepoBranch :: String
-    , projPath :: String
-    , projDeployable :: String
-    , projPackagesHash :: String
+data Project = Project
+    { projName :: T.Text
+    , projRepo :: T.Text
+    , projRepoBranch :: T.Text
+    , projPath :: T.Text
+    , projDeployable :: Maybe T.Text
+    , projPackagesHash :: T.Text
     } deriving (Show, Read)
-type RepoData = [ProjData]
 
-getRepoData :: String -> String -> IO RepoData
+instance FromRow Project where
+    fromRow = Project <$> field <*> field <*> field <*> field <*> field <*> field
+
+type RepoData = [Project]
+
+data Relationship = Relationship
+    { relParent :: T.Text
+    , relChild :: T.Text
+    }
+
+instance FromRow Relationship where
+    fromRow = Relationship <$> field <*> field
+
+getRepoData :: T.Text -> T.Text -> IO RepoData
 getRepoData repo branch = do
     -- connect to repo
     -- find all projects by looking for .csproj/.fsproj/.sqlproj files
@@ -67,21 +81,21 @@ getRepoData repo branch = do
     -- get hash of packages.config file
     -- return with info
     return(
-        [ ProjData
-            { projName="ABC.Foo"
-            , projRepo=repo
-            , projRepoBranch=branch
-            , projPath="Foo"
-            , projDeployable="ABC.Foo"
-            , projPackagesHash="12345"
+        [ Project
+            { projName = "ABC.Foo"
+            , projRepo = repo
+            , projRepoBranch = branch
+            , projPath = "Foo"
+            , projDeployable = Just "ABC.Foo"
+            , projPackagesHash = "12345"
             }
-        , ProjData
-            { projName="ABC.Bar"
-            , projRepo=repo
-            , projRepoBranch=branch
-            , projPath="Bar"
-            , projDeployable=""
-            , projPackagesHash="54321"
+        , Project
+            { projName = "ABC.Bar"
+            , projRepo = repo
+            , projRepoBranch = branch
+            , projPath = "Bar"
+            , projDeployable = Nothing
+            , projPackagesHash = "54321"
             }
         ])
 
@@ -105,7 +119,7 @@ githubRequest request = do
 
 -- database
 
-updateDB :: ProjData -> IO ()
+updateDB :: Project -> IO ()
 updateDB projData = do
     -- update/create row in project table in db
     -- if project's packages hash is different from the one in the db
@@ -115,6 +129,11 @@ updateDB projData = do
     appendFile "fakeDB" (show projData ++ "\n")
     return ()
 
+dbTest = do
+    conn <- open "data.db"
+    r <- query_ conn "select * from project" :: IO [Project]
+    mapM_ print r
+    close conn
 
 -- main
 
