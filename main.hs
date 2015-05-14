@@ -253,8 +253,9 @@ main = do
         if null result then return ()
         else do
             T.IO.putStrLn p
-            print result
+            output result
             putStrLn ""
   where
     isDir o = let Just t = jLookup "type" o in jString t == "dir" 
+    output = mapM_ (T.IO.putStrLn . T.cons '\t')
 
