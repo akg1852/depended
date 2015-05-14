@@ -4,6 +4,7 @@ import Control.Monad
 import Control.Applicative
 import System.IO
 import Data.Maybe
+import Data.List
 import qualified Data.Foldable as Foldable
 import qualified Data.HashMap.Strict as HM
 import qualified Data.Text as T
@@ -112,11 +113,11 @@ githubRequest request = do
 
 -- database
 
-clearDB :: IO ()
-clearDB = do
+deleteProject :: T.Text -> IO ()
+deleteProject name = do
     conn <- open "data.db"
-    execute_ conn "delete from project"
-    execute_ conn "delete from relationship"
+    execute conn "delete from project where name like ?" (Only name)
+    execute conn "delete from relationship where parent like ?" (Only name)
     close conn
 
 insertProject :: Project -> IO ()
@@ -138,11 +139,18 @@ selectReverseDependencies s = do
     close conn
     return $ map relParent rels
 
+selectAllProjects :: IO [T.Text]
+selectAllProjects = do
+    conn <- open "data.db"
+    projs <- query_ conn "select * from project"
+    close conn
+    return $ map projName projs
+
 
 -- main
 
 main = do
-    clearDB
+    deleteProject "%"
     c <- config
     let Just repos = jLookup "repositories" c
     Foldable.forM_ (fmap jObject $ jArray repos) $ \r -> do
@@ -157,6 +165,21 @@ main = do
             if isJust csproj
                 then do
                     let packages = V.find (\f -> fmap jString (jLookup "name" f) == Just ("packages.config")) files
+                    if isJust packages
+                        then do
+                            let Just packagesUrl = jLookup "download_url" (fromJust packages)
+                            packageXml <- simpleHttp . T.unpack $ jString packagesUrl
+                            let packageEls = XML.findChildren (XML.unqual "package") $ parseXML packageXml
+                            let packageDeps = map (fromJust . XML.findAttr (XML.unqual "id")) packageEls
+                            forM_ packageDeps $ \d -> insertRelationship (jString name) (T.pack d)
+                        else deleteProject $ jString name
+
+                    let Just csprojUrl = jLookup "download_url" (fromJust csproj)
+                    csprojXml <- simpleHttp . T.unpack $ jString csprojUrl
+                    let pRefEls = XML.filterElementsName (\qn -> let n = XML.qName qn in n == "ProjectReference") $ parseXML csprojXml
+                    let csprojDeps = map (XML.strContent . fromJust . XML.filterChildName (\qn -> let n = XML.qName qn in n == "Name")) pRefEls
+                    forM_ csprojDeps $ \d -> insertRelationship (jString name) (T.pack d)
+
                     let hash = if isJust packages then jLookup "sha" $ fromJust packages else Nothing
                     let project = Project { projName = jString name
                                           , projRepo = jString repo
@@ -166,18 +189,14 @@ main = do
                                           , projPackagesHash = fmap jString hash
                                           }
                     insertProject project
-                    if isJust packages
-                        then do
-                            let Just packagesUrl = jLookup "download_url" (fromJust packages)
-                            packageXml <- simpleHttp . T.unpack $ jString packagesUrl
-                            let packageEls = XML.findChildren (XML.unqual "package") . parseXML $ packageXml
-                            let dependencies = map (fromJust . XML.findAttr (XML.unqual "id")) packageEls
-                            forM_ dependencies $ \d -> do
-                                insertRelationship (jString name) (T.pack d)
-                        else return ()
-                else return ()
-            rDeps <- selectReverseDependencies $ jString name
-            T.IO.putStrLn $ jString name
-            print rDeps
+                else deleteProject $ jString name
+
+    allProjects <- selectAllProjects
+    forM_ allProjects $ \p -> do
+        rDeps <- selectReverseDependencies p 
+        T.IO.putStrLn p
+        print $ nub rDeps
+        putStrLn ""
   where
+
     isDir o = let Just t = jLookup "type" o in jString t == "dir" 
