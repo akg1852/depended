@@ -20,6 +20,7 @@ import Database.SQLite.Simple
 import Database.SQLite.Simple.FromRow
 import Database.SQLite.Simple.ToRow
 import Database.SQLite.Simple.ToField
+import System.Console.ANSI
 
 -- json
 
@@ -252,10 +253,16 @@ main = do
         let result = if immediate then revDeps else deployableRevDeps
         if null result then return ()
         else do
+            setRed
             T.IO.putStrLn p
+            setBlue
             output result
             putStrLn ""
+    setWhite
   where
     isDir o = let Just t = jLookup "type" o in jString t == "dir" 
     output = mapM_ (T.IO.putStrLn . T.cons '\t')
+    setRed = setSGR [SetColor Foreground Dull Red]
+    setBlue = setSGR [SetColor Foreground Dull Yellow]
+    setWhite = setSGR [SetColor Foreground Dull White]
 
