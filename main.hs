@@ -3,9 +3,11 @@
 import Control.Monad
 import Control.Applicative
 import System.IO
+import Data.Maybe
+import qualified Data.Foldable as Foldable
 import qualified Data.HashMap.Strict as HM
 import qualified Data.Text as T
-import qualified Data.Vector as Vector
+import qualified Data.Vector as V
 import qualified Data.ByteString.Char8 as Char8
 import qualified Data.ByteString.Lazy.Char8 as LazyChar8
 import qualified Data.Aeson as JSON
@@ -28,15 +30,18 @@ jObject v = case v of
     JSON.Object x -> x
     _ -> error "invalid json object"
     
-jArray :: JSON.Value -> Vector.Vector JSON.Value
+jArray :: JSON.Value -> V.Vector JSON.Value
 jArray v = case v of
     JSON.Array x -> x
     _ -> error "invalid json array"
 
-jLookupString :: T.Text -> JObject -> Maybe T.Text
-jLookupString key jObject = case HM.lookup key jObject of
-    Just (JSON.String v) -> Just v
-    _ -> Nothing
+jString :: JSON.Value -> T.Text
+jString v = case v of
+    JSON.String x -> x
+    _ -> error "invalid json string"
+
+jLookup :: T.Text -> JObject -> Maybe JSON.Value
+jLookup key jObject = HM.lookup key jObject
 
 
 -- config
@@ -55,7 +60,7 @@ data Project = Project
     , projRepoBranch :: T.Text
     , projPath :: T.Text
     , projDeployable :: Maybe T.Text
-    , projPackagesHash :: T.Text
+    , projPackagesHash :: Maybe T.Text
     } deriving (Show, Read)
 
 instance FromRow Project where
@@ -87,7 +92,7 @@ getRepoData repo branch = do
             , projRepoBranch = branch
             , projPath = "Foo"
             , projDeployable = Just "ABC.Foo"
-            , projPackagesHash = "12345"
+            , projPackagesHash = Just "12345"
             }
         , Project
             { projName = "ABC.Bar"
@@ -95,21 +100,21 @@ getRepoData repo branch = do
             , projRepoBranch = branch
             , projPath = "Bar"
             , projDeployable = Nothing
-            , projPackagesHash = "54321"
+            , projPackagesHash = Just "54321"
             }
         ])
 
 githubRequest :: T.Text -> IO LazyChar8.ByteString
 githubRequest request = do
     c <- config
-    let Just githubUrl = jLookupString "githubUrl" c
-    let Just githubToken = jLookupString "githubToken" c
+    let Just githubUrl = jLookup "githubUrl" c
+    let Just githubToken = jLookup "githubToken" c
 
-    r <- parseUrl . T.unpack $ T.append githubUrl request
+    r <- parseUrl . T.unpack $ T.append (jString githubUrl) request
     let request = r { method = "GET" 
                     , requestHeaders =
                         [ ("User-Agent", "depended")
-                        , ("Authorization", Char8.pack ("token " ++ (T.unpack githubToken)))
+                        , ("Authorization", Char8.pack ("token " ++ (T.unpack $ jString githubToken)))
                         ]
                     }
     withManager $ \manager -> do
@@ -147,4 +152,33 @@ main = do
     mapM_ updateDB repoData
     output <- readFile "fakeDB"
     putStrLn output
+
+
+doStuff = do
+    c <- config
+    let Just repos = jLookup "repositories" c
+    Foldable.forM_ (fmap jObject $ jArray repos) $ \r -> do
+        let Just repo = jLookup "repo" r
+        let Just branch = jLookup "branch" r
+        projects <- githubRequest $ T.concat ["/repos/", jString repo, "/contents/project?ref=", jString branch]
+        Foldable.forM_ (V.filter isDir . fmap jObject . jArray $ parseJSON projects) $ \p -> do
+            let Just name = jLookup "name" p
+            proj <- githubRequest $ T.concat ["/repos/", jString repo, "/contents/project/", jString name, "?ref=", jString branch]
+            let files = V.filter (not . isDir) . fmap jObject . jArray $ parseJSON proj
+            let csproj = V.find (\f -> fmap jString (jLookup "name" f) == Just (T.append (jString name) ".csproj")) files
+            if isJust csproj
+                then do
+                    let packages = V.find (\f -> fmap jString (jLookup "name" f) == Just ("packages.config")) files
+                    let hash = if isJust packages then jLookup "sha" $ fromJust packages else Nothing
+                    let project = Project { projName = jString name
+                                          , projRepo = jString repo
+                                          , projRepoBranch = jString branch
+                                          , projPath = jString name
+                                          , projDeployable = Nothing -- todo: get deployable data
+                                          , projPackagesHash = fmap jString hash
+                                          }
+                    print project
+                else return ()
+  where
+    isDir o = let Just t = jLookup "type" o in jString t == "dir" 
 
