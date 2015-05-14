@@ -71,7 +71,7 @@ data Project = Project
     , projRepo :: T.Text
     , projRepoBranch :: T.Text
     , projPath :: T.Text
-    , projDeployable :: Maybe T.Text
+    , projDeployable :: T.Text
     , projProjHash :: T.Text
     , projPackagesHash :: Maybe T.Text
     } deriving (Show, Read)
@@ -80,7 +80,7 @@ instance FromRow Project where
     fromRow = Project <$> field <*> field <*> field <*> field <*> field <*> field <*> field
 
 instance ToRow Project where
-    toRow (Project a b c d e f g) = [toField a, toField b, toField c, toField d, nullable e, toField f, nullable g]
+    toRow (Project a b c d e f g) = [toField a, toField b, toField c, toField d, toField e, toField f, nullable g]
         where nullable x = if isJust x then toField $ fromJust x else SQLNull
 
 data Relationship = Relationship
@@ -134,9 +134,9 @@ insertRelationship parent child = do
     close conn
 
 selectReverseDependencies :: T.Text -> IO [T.Text]
-selectReverseDependencies s = do
+selectReverseDependencies projName = do
     conn <- open "data.db"
-    rels <- query conn "select * from relationship where child = ?" (Only s)
+    rels <- query conn "select * from relationship where child = ? group by parent, child order by parent" (Only projName)
     close conn
     return $ map relParent rels
 
@@ -154,6 +154,30 @@ selectProjectField field projName = do
     close conn
     return $ if null projs then Nothing else Just . field $ head projs
 
+updateProjectDeployable :: T.Text -> Bool -> IO ()
+updateProjectDeployable projName v = do
+    conn <- open "data.db"
+    execute conn "update project set deployable = ? where name = ?" [T.pack $ show v, projName]
+    close conn
+
+
+-- deployable reverse dependencies
+
+getDeployableReverseDependencies :: [T.Text] -> [T.Text] -> IO [T.Text]
+getDeployableReverseDependencies [] _ = return []
+getDeployableReverseDependencies candidates pool = do
+    deployables <- filterM isDeployable candidates
+    revDeps <- mapM selectReverseDependencies candidates
+    let newCandidates = intersect (nub pool) (nub $ concat revDeps)
+    let newPool = (nub pool) \\ newCandidates
+    remains <- getDeployableReverseDependencies newCandidates newPool
+    return $ deployables ++ remains
+
+isDeployable :: T.Text -> IO Bool
+isDeployable projName = do
+    d <- selectProjectField projDeployable projName
+    return $ d == Just "True"
+    
 
 -- main
 
@@ -181,7 +205,6 @@ main = do
                     let projHash = jLookup "sha" $ fromJust csproj
                     let isNewProjHash = oldProjHash /= fmap jString projHash
 
-
                     if isNewPackagesHash || isNewProjHash
                         then do
                             deleteProject $ jString name
@@ -190,7 +213,7 @@ main = do
                                                     , projRepo = jString repo
                                                     , projRepoBranch = jString branch
                                                     , projPath = jString name
-                                                    , projDeployable = Nothing -- todo: get deployable data
+                                                    , projDeployable = "False"
                                                     , projProjHash = jString $ fromJust projHash
                                                     , projPackagesHash = fmap jString packagesHash
                                                     }
@@ -212,15 +235,20 @@ main = do
                                     forM_ csprojDeps $ \d -> insertRelationship (jString name) (T.pack d)
                                 else return ()
                         else return ()
+
+                    updateProjectDeployable (jString name) $ isJust $ V.find (\f -> fmap jString (jLookup "name" f) == Just ("deploy.xml")) files 
+
                 else deleteProject $ jString name
 
     allProjects <- selectAllProjects
     forM_ allProjects $ \p -> do
-        rDeps <- selectReverseDependencies p 
-        if null rDeps then return ()
+        revDeps <- selectReverseDependencies p 
+        if null revDeps then return ()
         else do
+            deployableRevDeps <- getDeployableReverseDependencies [p] (delete p allProjects)
             T.IO.putStrLn p
-            print $ nub rDeps
+            print revDeps
+            print deployableRevDeps
             putStrLn ""
   where
     isDir o = let Just t = jLookup "type" o in jString t == "dir" 
