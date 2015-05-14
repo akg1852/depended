@@ -143,7 +143,7 @@ selectReverseDependencies s = do
 selectAllProjects :: IO [T.Text]
 selectAllProjects = do
     conn <- open "data.db"
-    projs <- query_ conn "select * from project"
+    projs <- query_ conn "select * from project order by name"
     close conn
     return $ map projName projs
 
@@ -217,9 +217,11 @@ main = do
     allProjects <- selectAllProjects
     forM_ allProjects $ \p -> do
         rDeps <- selectReverseDependencies p 
-        T.IO.putStrLn p
-        print $ nub rDeps
-        putStrLn ""
+        if null rDeps then return ()
+        else do
+            T.IO.putStrLn p
+            print $ nub rDeps
+            putStrLn ""
   where
-
     isDir o = let Just t = jLookup "type" o in jString t == "dir" 
+
