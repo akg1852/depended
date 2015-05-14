@@ -7,14 +7,17 @@ import Data.Maybe
 import qualified Data.Foldable as Foldable
 import qualified Data.HashMap.Strict as HM
 import qualified Data.Text as T
+import qualified Data.Text.IO as T.IO (putStrLn)
 import qualified Data.Vector as V
 import qualified Data.ByteString.Char8 as Char8
 import qualified Data.ByteString.Lazy.Char8 as LazyChar8
 import qualified Data.Aeson as JSON
-import Text.XML.Light as XML (parseXML)
+import qualified Text.XML.Light as XML
 import Network.HTTP.Conduit
 import Database.SQLite.Simple
 import Database.SQLite.Simple.FromRow
+import Database.SQLite.Simple.ToRow
+import Database.SQLite.Simple.ToField
 
 -- json
 
@@ -44,6 +47,14 @@ jLookup :: T.Text -> JObject -> Maybe JSON.Value
 jLookup key jObject = HM.lookup key jObject
 
 
+-- xml
+
+parseXML :: LazyChar8.ByteString -> XML.Element
+parseXML s = case XML.parseXMLDoc s of
+    Just x -> x
+    _ -> error "invalid xml"
+
+
 -- config
 
 config :: IO JObject
@@ -52,7 +63,7 @@ config = do
     return . jObject . parseJSON . LazyChar8.pack $ file
 
 
--- repositories & projects
+-- projects and relationships
 
 data Project = Project
     { projName :: T.Text
@@ -66,7 +77,9 @@ data Project = Project
 instance FromRow Project where
     fromRow = Project <$> field <*> field <*> field <*> field <*> field <*> field
 
-type RepoData = [Project]
+instance ToRow Project where
+    toRow (Project a b c d e f) = [toField a, toField b, toField c, toField d, nullable e, nullable f]
+        where nullable x = if isJust x then toField $ fromJust x else SQLNull
 
 data Relationship = Relationship
     { relParent :: T.Text
@@ -76,33 +89,8 @@ data Relationship = Relationship
 instance FromRow Relationship where
     fromRow = Relationship <$> field <*> field
 
-getRepoData :: T.Text -> T.Text -> IO RepoData
-getRepoData repo branch = do
-    -- connect to repo
-    -- find all projects by looking for .csproj/.fsproj/.sqlproj files
-    -- get project name from proj file
-    -- get path to project folder
-    -- check for deploy.xml, and get deployable name (and type?), if present
-    -- get hash of packages.config file
-    -- return with info
-    return(
-        [ Project
-            { projName = "ABC.Foo"
-            , projRepo = repo
-            , projRepoBranch = branch
-            , projPath = "Foo"
-            , projDeployable = Just "ABC.Foo"
-            , projPackagesHash = Just "12345"
-            }
-        , Project
-            { projName = "ABC.Bar"
-            , projRepo = repo
-            , projRepoBranch = branch
-            , projPath = "Bar"
-            , projDeployable = Nothing
-            , projPackagesHash = Just "54321"
-            }
-        ])
+
+-- github
 
 githubRequest :: T.Text -> IO LazyChar8.ByteString
 githubRequest request = do
@@ -124,37 +112,37 @@ githubRequest request = do
 
 -- database
 
-updateDB :: Project -> IO ()
-updateDB projData = do
-    -- update/create row in project table in db
-    -- if project's packages hash is different from the one in the db
-    --     get packages.config for project
-    --     clear all relationship rows in db where project is parent
-    --     update rows in relationship table in db from new packages file
-    appendFile "fakeDB" (show projData ++ "\n")
-    return ()
-
-dbTest = do
+clearDB :: IO ()
+clearDB = do
     conn <- open "data.db"
-    r <- query_ conn "select * from project" :: IO [Project]
-    mapM_ print r
+    execute_ conn "delete from project"
+    execute_ conn "delete from relationship"
     close conn
+
+insertProject :: Project -> IO ()
+insertProject project = do
+    conn <- open "data.db"
+    execute conn "insert into project values (?, ?, ?, ?, ?, ?)" project
+    close conn
+
+insertRelationship :: T.Text -> T.Text -> IO()
+insertRelationship parent child = do
+    conn <- open "data.db"
+    execute conn "insert into relationship values (?, ?)" [parent, child]
+    close conn
+
+selectReverseDependencies :: T.Text -> IO [T.Text]
+selectReverseDependencies s = do
+    conn <- open "data.db"
+    rels <- query conn "select * from relationship where child = ?" (Only s)
+    close conn
+    return $ map relParent rels
+
 
 -- main
 
 main = do
-    -- for each repo listed in a config file, get data
-    -- update db
-    -- for each project (for which we want results), get reverse-dependencies, trace them back to deployables
-    -- display results
-    repoData <- getRepoData "XYZ/ABC" "master"
-    writeFile "fakeDB" ""
-    mapM_ updateDB repoData
-    output <- readFile "fakeDB"
-    putStrLn output
-
-
-doStuff = do
+    clearDB
     c <- config
     let Just repos = jLookup "repositories" c
     Foldable.forM_ (fmap jObject $ jArray repos) $ \r -> do
@@ -177,8 +165,19 @@ doStuff = do
                                           , projDeployable = Nothing -- todo: get deployable data
                                           , projPackagesHash = fmap jString hash
                                           }
-                    print project
+                    insertProject project
+                    if isJust packages
+                        then do
+                            let Just packagesUrl = jLookup "download_url" (fromJust packages)
+                            packageXml <- simpleHttp . T.unpack $ jString packagesUrl
+                            let packageEls = XML.findChildren (XML.unqual "package") . parseXML $ packageXml
+                            let dependencies = map (fromJust . XML.findAttr (XML.unqual "id")) packageEls
+                            forM_ dependencies $ \d -> do
+                                insertRelationship (jString name) (T.pack d)
+                        else return ()
                 else return ()
+            rDeps <- selectReverseDependencies $ jString name
+            T.IO.putStrLn $ jString name
+            print rDeps
   where
     isDir o = let Just t = jLookup "type" o in jString t == "dir" 
-
