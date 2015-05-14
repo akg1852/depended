@@ -192,7 +192,7 @@ main = do
             let Just name = jLookup "name" p
             proj <- githubRequest $ T.concat ["/repos/", jString repo, "/contents/project/", jString name, "?ref=", jString branch]
             let files = V.filter (not . isDir) . fmap jObject . jArray $ parseJSON proj
-            let csproj = V.find (\f -> fmap jString (jLookup "name" f) == Just (T.append (jString name) ".csproj")) files
+            let csproj = V.find (\f -> let n = jString . fromJust $ jLookup "name" f; projFile x = T.concat [jString name, ".", x, "proj"] in (n == projFile "cs") || (n == projFile "fs") || (n == projFile "sql") ) files
             if isJust csproj
                 then do
                     let packages = V.find (\f -> fmap jString (jLookup "name" f) == Just ("packages.config")) files
