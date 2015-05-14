@@ -72,14 +72,15 @@ data Project = Project
     , projRepoBranch :: T.Text
     , projPath :: T.Text
     , projDeployable :: Maybe T.Text
+    , projProjHash :: T.Text
     , projPackagesHash :: Maybe T.Text
     } deriving (Show, Read)
 
 instance FromRow Project where
-    fromRow = Project <$> field <*> field <*> field <*> field <*> field <*> field
+    fromRow = Project <$> field <*> field <*> field <*> field <*> field <*> field <*> field
 
 instance ToRow Project where
-    toRow (Project a b c d e f) = [toField a, toField b, toField c, toField d, nullable e, nullable f]
+    toRow (Project a b c d e f g) = [toField a, toField b, toField c, toField d, nullable e, toField f, nullable g]
         where nullable x = if isJust x then toField $ fromJust x else SQLNull
 
 data Relationship = Relationship
@@ -123,7 +124,7 @@ deleteProject name = do
 insertProject :: Project -> IO ()
 insertProject project = do
     conn <- open "data.db"
-    execute conn "insert into project values (?, ?, ?, ?, ?, ?)" project
+    execute conn "insert into project values (?, ?, ?, ?, ?, ?, ?)" project
     close conn
 
 insertRelationship :: T.Text -> T.Text -> IO()
@@ -146,11 +147,17 @@ selectAllProjects = do
     close conn
     return $ map projName projs
 
+selectProjectField :: (Project -> a) -> T.Text -> IO (Maybe a)
+selectProjectField field projName = do
+    conn <- open "data.db"
+    projs <- query conn "select * from project where name = ?" (Only projName)
+    close conn
+    return $ if null projs then Nothing else Just . field $ head projs
+
 
 -- main
 
 main = do
-    deleteProject "%"
     c <- config
     let Just repos = jLookup "repositories" c
     Foldable.forM_ (fmap jObject $ jArray repos) $ \r -> do
@@ -165,30 +172,46 @@ main = do
             if isJust csproj
                 then do
                     let packages = V.find (\f -> fmap jString (jLookup "name" f) == Just ("packages.config")) files
-                    if isJust packages
+
+                    oldPackagesHash <- selectProjectField projPackagesHash (jString name)
+                    let packagesHash = if isJust packages then jLookup "sha" $ fromJust packages else Nothing
+                    let isNewPackagesHash = join oldPackagesHash /= fmap jString packagesHash
+
+                    oldProjHash <- selectProjectField projProjHash (jString name)
+                    let projHash = jLookup "sha" $ fromJust csproj
+                    let isNewProjHash = oldProjHash /= fmap jString projHash
+
+
+                    if isNewPackagesHash || isNewProjHash
                         then do
-                            let Just packagesUrl = jLookup "download_url" (fromJust packages)
-                            packageXml <- simpleHttp . T.unpack $ jString packagesUrl
-                            let packageEls = XML.findChildren (XML.unqual "package") $ parseXML packageXml
-                            let packageDeps = map (fromJust . XML.findAttr (XML.unqual "id")) packageEls
-                            forM_ packageDeps $ \d -> insertRelationship (jString name) (T.pack d)
-                        else deleteProject $ jString name
+                            deleteProject $ jString name
 
-                    let Just csprojUrl = jLookup "download_url" (fromJust csproj)
-                    csprojXml <- simpleHttp . T.unpack $ jString csprojUrl
-                    let pRefEls = XML.filterElementsName (\qn -> let n = XML.qName qn in n == "ProjectReference") $ parseXML csprojXml
-                    let csprojDeps = map (XML.strContent . fromJust . XML.filterChildName (\qn -> let n = XML.qName qn in n == "Name")) pRefEls
-                    forM_ csprojDeps $ \d -> insertRelationship (jString name) (T.pack d)
+                            insertProject $ Project { projName = jString name
+                                                    , projRepo = jString repo
+                                                    , projRepoBranch = jString branch
+                                                    , projPath = jString name
+                                                    , projDeployable = Nothing -- todo: get deployable data
+                                                    , projProjHash = jString $ fromJust projHash
+                                                    , projPackagesHash = fmap jString packagesHash
+                                                    }
+                            if isNewPackagesHash && isJust packages
+                                then do
+                                    let Just packagesUrl = jLookup "download_url" (fromJust packages)
+                                    packageXml <- simpleHttp . T.unpack $ jString packagesUrl
+                                    let packageEls = XML.findChildren (XML.unqual "package") $ parseXML packageXml
+                                    let packageDeps = map (fromJust . XML.findAttr (XML.unqual "id")) packageEls
+                                    forM_ packageDeps $ \d -> insertRelationship (jString name) (T.pack d)
+                                else return () 
 
-                    let hash = if isJust packages then jLookup "sha" $ fromJust packages else Nothing
-                    let project = Project { projName = jString name
-                                          , projRepo = jString repo
-                                          , projRepoBranch = jString branch
-                                          , projPath = jString name
-                                          , projDeployable = Nothing -- todo: get deployable data
-                                          , projPackagesHash = fmap jString hash
-                                          }
-                    insertProject project
+                            if isNewProjHash
+                                then do 
+                                    let Just csprojUrl = jLookup "download_url" (fromJust csproj)
+                                    csprojXml <- simpleHttp . T.unpack $ jString csprojUrl
+                                    let pRefEls = XML.filterElementsName (\qn -> let n = XML.qName qn in n == "ProjectReference") $ parseXML csprojXml
+                                    let csprojDeps = map (XML.strContent . fromJust . XML.filterChildName (\qn -> let n = XML.qName qn in n == "Name")) pRefEls
+                                    forM_ csprojDeps $ \d -> insertRelationship (jString name) (T.pack d)
+                                else return ()
+                        else return ()
                 else deleteProject $ jString name
 
     allProjects <- selectAllProjects
