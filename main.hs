@@ -70,17 +70,16 @@ data Project = Project
     { projName :: T.Text
     , projRepo :: T.Text
     , projRepoBranch :: T.Text
-    , projPath :: T.Text
     , projDeployable :: T.Text
     , projProjHash :: T.Text
     , projPackagesHash :: Maybe T.Text
     } deriving (Show, Read)
 
 instance FromRow Project where
-    fromRow = Project <$> field <*> field <*> field <*> field <*> field <*> field <*> field
+    fromRow = Project <$> field <*> field <*> field <*> field <*> field <*> field
 
 instance ToRow Project where
-    toRow (Project a b c d e f g) = [toField a, toField b, toField c, toField d, toField e, toField f, nullable g]
+    toRow (Project a b c d e f) = [toField a, toField b, toField c, toField d, toField e, nullable f]
         where nullable x = if isJust x then toField $ fromJust x else SQLNull
 
 data Relationship = Relationship
@@ -124,7 +123,7 @@ deleteProject name = do
 insertProject :: Project -> IO ()
 insertProject project = do
     conn <- open "data.db"
-    execute conn "insert into project values (?, ?, ?, ?, ?, ?, ?)" project
+    execute conn "insert into project values (?, ?, ?, ?, ?, ?)" project
     close conn
 
 insertRelationship :: T.Text -> T.Text -> IO()
@@ -212,7 +211,6 @@ main = do
                             insertProject $ Project { projName = jString name
                                                     , projRepo = jString repo
                                                     , projRepoBranch = jString branch
-                                                    , projPath = jString name
                                                     , projDeployable = "False"
                                                     , projProjHash = jString $ fromJust projHash
                                                     , projPackagesHash = fmap jString packagesHash
