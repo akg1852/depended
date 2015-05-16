@@ -22,6 +22,7 @@ import Database.SQLite.Simple.ToRow
 import Database.SQLite.Simple.ToField
 import System.Console.ANSI
 
+
 -- json
 
 type JObject = HM.HashMap T.Text JSON.Value
@@ -255,7 +256,7 @@ main = do
         else do
             setRed
             T.IO.putStrLn p
-            setBlue
+            setYellow
             output result
             putStrLn ""
     setWhite
@@ -263,6 +264,6 @@ main = do
     isDir o = let Just t = jLookup "type" o in jString t == "dir" 
     output = mapM_ (T.IO.putStrLn . T.cons '\t')
     setRed = setSGR [SetColor Foreground Dull Red]
-    setBlue = setSGR [SetColor Foreground Dull Yellow]
+    setYellow = setSGR [SetColor Foreground Dull Yellow]
     setWhite = setSGR [SetColor Foreground Dull White]
 
