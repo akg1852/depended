@@ -1,9 +1,7 @@
 {
     "githubUrl": "",
-    "githubToken": ""
     "githubToken": "",
     "repositories": [
-        { "repo": "", "branch": "" },
         { "repo": "", "branch": "" }
     ]
 }
