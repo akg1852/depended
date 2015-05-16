@@ -1,6 +1,6 @@
 # depended
 
-Depended is a tool for mapping from .NET projects to the deployables which ddepend on them.
+Depended is a tool for mapping from .NET projects to the deployables which depend on them.
 
 ## Setup
 

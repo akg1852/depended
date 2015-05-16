@@ -174,7 +174,6 @@ getData = do
     isDir o = let Just t = jLookup "type" o in jString t == "dir" 
 
 
-
 -- database
 
 openDb :: IO Connection
@@ -182,7 +181,6 @@ openDb = do
     c <- config
     conn <- open . T.unpack . jString . fromJust $ jLookup "dbFile" c
     return conn
-    
 
 deleteProject :: T.Text -> IO ()
 deleteProject name = do
