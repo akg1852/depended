@@ -42,6 +42,9 @@ jArray v = case v of
     JSON.Array x -> x
     _ -> error "invalid json array"
 
+jArrayOfObject :: JSON.Value -> V.Vector JObject
+jArrayOfObject = fmap jObject . jArray
+
 jString :: JSON.Value -> T.Text
 jString v = case v of
     JSON.String x -> x
@@ -57,6 +60,9 @@ parseXML :: LazyChar8.ByteString -> XML.Element
 parseXML s = case XML.parseXMLDoc s of
     Just x -> x
     _ -> error "invalid xml"
+
+qNameIs :: T.Text -> (XML.QName -> Bool)
+qNameIs n q = let qn = T.pack (XML.qName q) in qn == n
 
 
 -- config
@@ -99,79 +105,73 @@ instance FromRow Relationship where
 githubRequest :: T.Text -> IO LazyChar8.ByteString
 githubRequest request = do
     c <- config
-    let Just githubUrl = jLookup "githubUrl" c
-    let Just githubToken = jLookup "githubToken" c
+    let githubUrl = jString . fromJust $ jLookup "githubUrl" c
+    let githubToken = jString . fromJust $ jLookup "githubToken" c
 
-    r <- parseUrl . T.unpack $ T.append (jString githubUrl) request
+    r <- parseUrl . T.unpack $ T.append githubUrl request
     let request = r { method = "GET" 
                     , requestHeaders =
                         [ ("User-Agent", "depended")
-                        , ("Authorization", Char8.pack ("token " ++ (T.unpack $ jString githubToken)))
+                        , ("Authorization", Char8.pack ("token " ++ (T.unpack $ githubToken)))
                         ]
                     }
     withManager $ \manager -> do
         response <- httpLbs request manager
         return $ responseBody response
 
+getData :: IO ()
 getData = do
     c <- config
-    let Just repos = jLookup "repositories" c
-    Foldable.forM_ (fmap jObject $ jArray repos) $ \r -> do
-        let Just repo = jLookup "repo" r
-        let Just branch = jLookup "branch" r
-        projects <- githubRequest $ T.concat ["/repos/", jString repo, "/contents/project?ref=", jString branch]
-        Foldable.forM_ (V.filter isDir . fmap jObject . jArray $ parseJSON projects) $ \p -> do
-            let Just name = jLookup "name" p
-            proj <- githubRequest $ T.concat ["/repos/", jString repo, "/contents/project/", jString name, "?ref=", jString branch]
-            let files = V.filter (not . isDir) . fmap jObject . jArray $ parseJSON proj
-            let csproj = V.find (\f -> let n = jString . fromJust $ jLookup "name" f; projFile x = T.concat [jString name, ".", x, "proj"] in (n == projFile "cs") || (n == projFile "fs") || (n == projFile "sql") ) files
-            if isJust csproj
-                then do
-                    let packages = V.find (\f -> fmap jString (jLookup "name" f) == Just ("packages.config")) files
+    let repos = jArrayOfObject . fromJust $ jLookup "repositories" c
+    Foldable.forM_ repos $ \r -> do
+        let repo = jString . fromJust $ jLookup "repo" r
+        let branch = jString . fromJust $ jLookup "branch" r
+        projects <- githubRequest $ T.concat ["/repos/", repo, "/contents/project?ref=", branch]
+        Foldable.forM_ (V.filter isDir . jArrayOfObject $ parseJSON projects) $ \p -> do
+            let name = jString . fromJust $ jLookup "name" p
+            proj <- githubRequest $ T.concat ["/repos/", repo, "/contents/project/", name, "?ref=", branch]
+            let files = V.filter (not . isDir) . jArrayOfObject $ parseJSON proj
 
-                    oldPackagesHash <- selectProjectField projPackagesHash (jString name)
-                    let packagesHash = if isJust packages then jLookup "sha" $ fromJust packages else Nothing
-                    let isNewPackagesHash = join oldPackagesHash /= fmap jString packagesHash
+            let csproj = join . find isJust $ map (($ files) . V.find . jNameIs . projFile name) ["cs", "fs", "sql"]
+            if isNothing csproj then deleteProject $ name
+            else do
+                let packages = V.find (jNameIs "packages.config") files
 
-                    oldProjHash <- selectProjectField projProjHash (jString name)
-                    let projHash = jLookup "sha" $ fromJust csproj
-                    let isNewProjHash = oldProjHash /= fmap jString projHash
+                oldPackagesHash <- selectProjectField projPackagesHash name
+                let packagesHash = if isJust packages then jLookup "sha" $ fromJust packages else Nothing
+                let isNewPackagesHash = join oldPackagesHash /= fmap jString packagesHash
 
-                    if isNewPackagesHash || isNewProjHash
-                        then do
-                            deleteProject $ jString name
+                oldProjHash <- selectProjectField projProjHash name
+                let projHash = jLookup "sha" $ fromJust csproj
+                let isNewProjHash = oldProjHash /= fmap jString projHash
 
-                            insertProject $ Project { projName = jString name
-                                                    , projRepo = jString repo
-                                                    , projRepoBranch = jString branch
-                                                    , projDeployable = "False"
-                                                    , projProjHash = jString $ fromJust projHash
-                                                    , projPackagesHash = fmap jString packagesHash
-                                                    }
-                            if isNewPackagesHash && isJust packages
-                                then do
-                                    let Just packagesUrl = jLookup "download_url" (fromJust packages)
-                                    packageXml <- simpleHttp . T.unpack $ jString packagesUrl
-                                    let packageEls = XML.findChildren (XML.unqual "package") $ parseXML packageXml
-                                    let packageDeps = map (fromJust . XML.findAttr (XML.unqual "id")) packageEls
-                                    forM_ packageDeps $ \d -> insertRelationship (jString name) (T.pack d)
-                                else return ()
+                when (isNewPackagesHash || isNewProjHash) $ do
+                    deleteProject $ name
+                    insertProject $ Project { projName = name
+                                            , projRepo = repo
+                                            , projRepoBranch = branch
+                                            , projDeployable = "False"
+                                            , projProjHash = jString $ fromJust projHash
+                                            , projPackagesHash = fmap jString packagesHash
+                                            }
+                    when (isNewPackagesHash && isJust packages) $
+                        getDependencies name (fromJust packages) "package" (XML.findAttrBy (qNameIs "id"))
+                    when isNewProjHash $
+                        (getDependencies name (fromJust csproj) "ProjectReference"
+                        (fmap XML.strContent . XML.filterChildName (qNameIs "Name")))
 
-                            if isNewProjHash
-                                then do
-                                    let Just csprojUrl = jLookup "download_url" (fromJust csproj)
-                                    csprojXml <- simpleHttp . T.unpack $ jString csprojUrl
-                                    let pRefEls = XML.filterElementsName (\qn -> let n = XML.qName qn in n == "ProjectReference") $ parseXML csprojXml
-                                    let csprojDeps = map (XML.strContent . fromJust . XML.filterChildName (\qn -> let n = XML.qName qn in n == "Name")) pRefEls
-                                    forM_ csprojDeps $ \d -> insertRelationship (jString name) (T.pack d)
-                                else return ()
-                        else return ()
-
-                    updateProjectDeployable (jString name) $ isJust $ V.find (\f -> fmap jString (jLookup "name" f) == Just ("deploy.xml")) files 
-
-                else deleteProject $ jString name
+                updateProjectDeployable name $ V.any (jNameIs "deploy.xml") files
   where
-    isDir o = let Just t = jLookup "type" o in jString t == "dir" 
+    isDir o = (jString . fromJust $ jLookup "type" o) == "dir"
+    projFile name ext = T.concat [name, ".", ext, "proj"]
+    jNameIs name o = (jString . fromJust $ jLookup "name" o) == name
+
+getDependencies :: T.Text -> JObject -> T.Text -> (XML.Element -> Maybe String) -> IO ()
+getDependencies projName file elName extractDepName = do
+    xml <- simpleHttp . T.unpack . jString . fromJust $ jLookup "download_url" file
+    let els = XML.filterElementsName (qNameIs elName) $ parseXML xml
+    let deps = fmap (T.pack . fromJust . extractDepName) els
+    mapM_ (insertRelationship projName) deps
 
 
 -- database
@@ -231,21 +231,21 @@ updateProjectDeployable projName v = do
 
 -- deployable reverse dependencies
 
-getDeployableReverseDependencies :: [T.Text] -> [T.Text] -> IO [T.Text]
-getDeployableReverseDependencies [] _ = return []
-getDeployableReverseDependencies candidates pool = do
-    deployables <- filterM isDeployable candidates
-    revDeps <- mapM selectReverseDependencies candidates
-    let newCandidates = intersect (nub pool) (nub $ concat revDeps)
-    let newPool = (nub pool) \\ newCandidates
-    remains <- getDeployableReverseDependencies newCandidates newPool
-    return $ deployables ++ remains
+getDeployableReverseDependencies :: T.Text -> IO [T.Text]
+getDeployableReverseDependencies proj = (go [proj]) . (delete proj) =<< selectAllProjects
+  where
+    go [] _ = return []
+    go candidates pool = do
+        deployables <- filterM isDeployable candidates
+        revDeps <- mapM selectReverseDependencies candidates
+        let newCandidates = intersect (nub pool) (nub $ concat revDeps)
+        let newPool = (nub pool) \\ newCandidates
+        remains <- go newCandidates newPool
+        return $ deployables ++ remains
+    isDeployable proj = do
+        d <- selectProjectField projDeployable proj
+        return $ d == Just "True"
 
-isDeployable :: T.Text -> IO Bool
-isDeployable projName = do
-    d <- selectProjectField projDeployable projName
-    return $ d == Just "True"
-    
 
 -- main
 
@@ -263,7 +263,7 @@ printAll isImmediate = do
     allProjects <- selectAllProjects
     forM_ allProjects $ \p -> do
         revDeps <- selectReverseDependencies p 
-        deployableRevDeps <- getDeployableReverseDependencies [p] (delete p allProjects)
+        deployableRevDeps <- getDeployableReverseDependencies p
         let result = if isImmediate then revDeps else deployableRevDeps
 
         when (not $ null result) $ do
