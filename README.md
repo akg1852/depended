@@ -15,10 +15,11 @@ Depended is a tool for mapping from .NET projects to the deployables which depen
 Depended is a command line tool, with the following options available:
 
 ```
---immediate     show immediate reverse-dependencies
-                instead of ultimate deployables
---cached        use cached data, rather than querying github
---clear         clear cache
+--clear             clear cache
+--cached            use cached data, rather than querying github
+--search <query>    return results for specific project(s)
+--immediate         show immediate reverse-dependencies
+                    instead of ultimate deployables
 ```
 
 ## Assumptions
