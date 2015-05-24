@@ -208,12 +208,15 @@ selectReverseDependencies projName = do
     close conn
     return $ map relParent rels
 
-selectAllProjects :: IO [T.Text]
-selectAllProjects = do
+selectProjects :: T.Text -> IO [T.Text]
+selectProjects search = do
     conn <- openDb
-    projs <- query_ conn "select * from project order by name"
+    projs <- query conn "select * from project where name like ? order by name" (Only $ T.concat ["%", search, "%"] )
     close conn
     return $ map projName projs
+
+selectAllProjects :: IO [T.Text]
+selectAllProjects = selectProjects ""
 
 selectProjectField :: (Project -> a) -> T.Text -> IO (Maybe a)
 selectProjectField field projName = do
@@ -253,24 +256,28 @@ main = do
     args <- getArgs
     when ("--clear" `elem` args) $ deleteProject "%"
     when ("--cached" `notElem` args) getData
-    printAll ("--immediate" `elem` args)
+
+    let search = case ("--search" `elemIndex` args) of
+            Just i -> T.pack $ args !! succ i
+            _ -> ""
+    let getDeps = if ("--immediate" `elem` args)
+        then selectReverseDependencies
+        else getDeployableReverseDependencies
+    output search getDeps
 
 
 -- display
 
-printAll :: Bool -> IO ()
-printAll isImmediate = do
-    allProjects <- selectAllProjects
+output :: T.Text -> (T.Text -> IO [T.Text]) -> IO ()
+output search getDeps = do
+    allProjects <- selectProjects search
     forM_ allProjects $ \p -> do
-        revDeps <- selectReverseDependencies p 
-        deployableRevDeps <- getDeployableReverseDependencies p
-        let result = if isImmediate then revDeps else deployableRevDeps
-
-        when (not $ null result) $ do
+        deps <- getDeps p
+        when (not $ null deps) $ do
             setColor Red
             T.IO.putStrLn p
             setColor Yellow
-            mapM_ (T.IO.putStrLn . T.cons '\t') result
+            mapM_ (T.IO.putStrLn . T.cons '\t') deps
             putStrLn ""
     setColor White
   where 
