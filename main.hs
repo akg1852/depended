@@ -6,6 +6,7 @@ import System.IO
 import Data.Maybe
 import Data.List
 import System.Environment
+import System.Environment.FindBin
 import qualified Data.Foldable as Foldable
 import qualified Data.HashMap.Strict as HM
 import qualified Data.Text as T
@@ -69,7 +70,8 @@ qNameIs n q = let qn = T.pack (XML.qName q) in qn == n
 
 config :: IO JObject
 config = do
-    file <- readFile "config.json"
+    dir <- getProgPath
+    file <- readFile (dir ++ "/config.json")
     return . jObject . parseJSON . LazyChar8.pack $ file
 
 
@@ -178,8 +180,9 @@ getDependencies projName file elName extractDepName = do
 
 openDb :: IO Connection
 openDb = do
+    dir <- getProgPath
     c <- config
-    conn <- open . T.unpack . jString . fromJust $ jLookup "dbFile" c
+    conn <- open . (dir ++) . ("/" ++) . T.unpack . jString . fromJust $ jLookup "dbFile" c
     return conn
 
 deleteProject :: T.Text -> IO ()
@@ -263,13 +266,13 @@ main = do
     let getDeps = if ("--immediate" `elem` args)
         then selectReverseDependencies
         else getDeployableReverseDependencies
-    output search getDeps
+    output search getDeps ("--plain" `elem` args)
 
 
 -- display
 
-output :: T.Text -> (T.Text -> IO [T.Text]) -> IO ()
-output search getDeps = do
+output :: T.Text -> (T.Text -> IO [T.Text]) -> Bool -> IO ()
+output search getDeps isPlain = do
     allProjects <- selectProjects search
     forM_ allProjects $ \p -> do
         deps <- getDeps p
@@ -279,7 +282,7 @@ output search getDeps = do
             setColor Yellow
             mapM_ (T.IO.putStrLn . T.cons '\t') deps
             putStrLn ""
-    setColor White
+            setColor White
   where 
-    setColor c = setSGR [SetColor Foreground Dull c]
+    setColor c = if isPlain then return () else setSGR [SetColor Foreground Dull c]
 

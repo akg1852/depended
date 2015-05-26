@@ -15,6 +15,7 @@ Depended is a tool for mapping from .NET projects to the deployables which depen
 Depended is a command line tool, with the following options available:
 
 ```
+--plain             print without colours
 --clear             clear cache
 --cached            use cached data, rather than querying github
 --search <query>    return results for specific project(s)
