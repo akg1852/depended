@@ -214,12 +214,12 @@ selectReverseDependencies projName = do
 selectProjects :: T.Text -> IO [T.Text]
 selectProjects search = do
     conn <- openDb
-    projs <- query conn "select * from project where name like ? order by name" (Only $ T.concat ["%", search, "%"] )
+    projs <- query conn "select * from project where name like ? order by name" (Only search )
     close conn
     return $ map projName projs
 
 selectAllProjects :: IO [T.Text]
-selectAllProjects = selectProjects ""
+selectAllProjects = selectProjects "%"
 
 selectProjectField :: (Project -> a) -> T.Text -> IO (Maybe a)
 selectProjectField field projName = do
@@ -262,7 +262,7 @@ main = do
 
     let search = case ("--search" `elemIndex` args) of
             Just i -> T.pack $ args !! succ i
-            _ -> ""
+            _ -> "%"
     let getDeps = if ("--immediate" `elem` args)
         then selectReverseDependencies
         else getDeployableReverseDependencies
