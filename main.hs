@@ -188,33 +188,33 @@ openDb = do
 deleteProject :: T.Text -> IO ()
 deleteProject name = do
     conn <- openDb
-    execute conn "delete from project where name like ?" (Only name)
-    execute conn "delete from relationship where parent like ?" (Only name)
+    execute conn "DELETE FROM project WHERE name LIKE ?" (Only name)
+    execute conn "DELETE FROM relationship WHERE parent LIKE ?" (Only name)
     close conn
 
 insertProject :: Project -> IO ()
 insertProject project = do
     conn <- openDb
-    execute conn "insert into project values (?, ?, ?, ?, ?, ?)" project
+    execute conn "INSERT INTO project VALUES (?, ?, ?, ?, ?, ?)" project
     close conn
 
 insertRelationship :: T.Text -> T.Text -> IO()
 insertRelationship parent child = do
     conn <- openDb
-    execute conn "insert into relationship values (?, ?)" [parent, child]
+    execute conn "INSERT INTO relationship VALUES (?, ?)" [parent, child]
     close conn
 
 selectReverseDependencies :: T.Text -> IO [T.Text]
 selectReverseDependencies projName = do
     conn <- openDb
-    rels <- query conn "select * from relationship where child = ? group by parent, child order by parent" (Only projName)
+    rels <- query conn "SELECT * FROM relationship WHERE child = ? GROUP BY parent, child ORDER BY parent" (Only projName)
     close conn
     return $ map relParent rels
 
 selectProjects :: T.Text -> IO [T.Text]
 selectProjects search = do
     conn <- openDb
-    projs <- query conn "select * from project where name like ? order by name" (Only search )
+    projs <- query conn "SELECT * FROM project WHERE name LIKE ? ORDER BY name" (Only search )
     close conn
     return $ map projName projs
 
@@ -224,14 +224,14 @@ selectAllProjects = selectProjects "%"
 selectProjectField :: (Project -> a) -> T.Text -> IO (Maybe a)
 selectProjectField field projName = do
     conn <- openDb
-    projs <- query conn "select * from project where name = ?" (Only projName)
+    projs <- query conn "SELECT * FROM project WHERE name = ?" (Only projName)
     close conn
     return $ if null projs then Nothing else Just . field $ head projs
 
 updateProjectDeployable :: T.Text -> Bool -> IO ()
 updateProjectDeployable projName v = do
     conn <- openDb
-    execute conn "update project set deployable = ? where name = ?" [T.pack $ show v, projName]
+    execute conn "UPDATE project SET deployable = ? WHERE name = ?" [T.pack $ show v, projName]
     close conn
 
 
