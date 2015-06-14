@@ -6,7 +6,12 @@ Depended is a tool for mapping from .NET projects to the deployables which depen
 
 * build the program using ghc
 * generate sqlite database using the data.sql file: `sqlite3 data.db < data.sql`
-* set configuration details in config.json
+* set configuration details in `config.json`
+  * `dbFile`: string representing relative path to sqlite database
+  * `githubUrl` and `githubToken`: github api credentials
+  * `repositories`: array of objects representing github repos:
+    * `repo`: the github repository, in the format `userName/repoName`
+    * `branch`: the branch of the repo to use
 
 ## Usage
 
