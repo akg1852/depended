@@ -1,105 +1,22 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 import Control.Monad
-import Control.Applicative
 import System.IO
 import Data.Maybe
 import Data.List
 import System.Environment
-import System.Environment.FindBin
 import qualified Data.Foldable as Foldable
-import qualified Data.HashMap.Strict as HM
 import qualified Data.Text as T
 import qualified Data.Text.IO as T.IO (putStrLn)
 import qualified Data.Vector as V
 import qualified Data.ByteString.Char8 as Char8
 import qualified Data.ByteString.Lazy.Char8 as LazyChar8
-import qualified Data.Aeson as JSON
 import qualified Text.XML.Light as XML
 import Network.HTTP.Conduit
-import Database.SQLite.Simple
-import Database.SQLite.Simple.FromRow
-import Database.SQLite.Simple.ToRow
-import Database.SQLite.Simple.ToField
 import System.Console.ANSI
 
-
--- json
-
-type JObject = HM.HashMap T.Text JSON.Value
-
-parseJSON :: LazyChar8.ByteString -> JSON.Value
-parseJSON s = case JSON.decode s of
-    Just x -> x
-    _ -> error "invalid json"
-    
-jObject :: JSON.Value -> JObject
-jObject v = case v of
-    JSON.Object x -> x
-    _ -> error "invalid json object"
-    
-jArray :: JSON.Value -> V.Vector JSON.Value
-jArray v = case v of
-    JSON.Array x -> x
-    _ -> error "invalid json array"
-
-jArrayOfObject :: JSON.Value -> V.Vector JObject
-jArrayOfObject = fmap jObject . jArray
-
-jString :: JSON.Value -> T.Text
-jString v = case v of
-    JSON.String x -> x
-    _ -> error "invalid json string"
-
-jLookup :: T.Text -> JObject -> Maybe JSON.Value
-jLookup key jObject = HM.lookup key jObject
-
-
--- xml
-
-parseXML :: LazyChar8.ByteString -> XML.Element
-parseXML s = case XML.parseXMLDoc s of
-    Just x -> x
-    _ -> error "invalid xml"
-
-qNameIs :: T.Text -> (XML.QName -> Bool)
-qNameIs n q = let qn = T.pack (XML.qName q) in qn == n
-
-
--- config
-
-config :: IO JObject
-config = do
-    dir <- getProgPath
-    file <- readFile (dir ++ "/config.json")
-    return . jObject . parseJSON . LazyChar8.pack $ file
-
-
--- projects and relationships
-
-data Project = Project
-    { projName :: T.Text
-    , projRepo :: T.Text
-    , projRepoBranch :: T.Text
-    , projDeployable :: T.Text
-    , projProjHash :: T.Text
-    , projPackagesHash :: Maybe T.Text
-    } deriving (Show, Read)
-
-instance FromRow Project where
-    fromRow = Project <$> field <*> field <*> field <*> field <*> field <*> field
-
-instance ToRow Project where
-    toRow (Project a b c d e f) = [toField a, toField b, toField c, toField d, toField e, nullable f]
-        where nullable x = if isJust x then toField $ fromJust x else SQLNull
-
-data Relationship = Relationship
-    { relParent :: T.Text
-    , relChild :: T.Text
-    }
-
-instance FromRow Relationship where
-    fromRow = Relationship <$> field <*> field
+import Model
+import Parse
 
 
 -- github
@@ -157,10 +74,9 @@ getData = do
                                             , projPackagesHash = fmap jString packagesHash
                                             }
                     when (isNewPackagesHash && isJust packages) $
-                        getDependencies name (fromJust packages) "package" (XML.findAttrBy (qNameIs "id"))
+                        getDependencies name (fromJust packages) "package" (xGetAttribute "id")
                     when isNewProjHash $
-                        (getDependencies name (fromJust csproj) "ProjectReference"
-                        (fmap XML.strContent . XML.filterChildName (qNameIs "Name")))
+                        getDependencies name (fromJust csproj) "ProjectReference" (xGetChild "Name")
 
                 updateProjectDeployable name $ V.any (jNameIs "deploy.xml") files
   where
@@ -168,71 +84,10 @@ getData = do
     projFile name ext = T.concat [name, ".", ext, "proj"]
     jNameIs name o = (jString . fromJust $ jLookup "name" o) == name
 
-getDependencies :: T.Text -> JObject -> T.Text -> (XML.Element -> Maybe String) -> IO ()
+getDependencies :: T.Text -> JObject -> T.Text -> (XML.Element -> Maybe T.Text) -> IO ()
 getDependencies projName file elName extractDepName = do
     xml <- simpleHttp . T.unpack . jString . fromJust $ jLookup "download_url" file
-    let els = XML.filterElementsName (qNameIs elName) $ parseXML xml
-    let deps = fmap (T.pack . fromJust . extractDepName) els
-    mapM_ (insertRelationship projName) deps
-
-
--- database
-
-openDb :: IO Connection
-openDb = do
-    dir <- getProgPath
-    c <- config
-    conn <- open . (dir ++) . ("/" ++) . T.unpack . jString . fromJust $ jLookup "dbFile" c
-    return conn
-
-deleteProject :: T.Text -> IO ()
-deleteProject name = do
-    conn <- openDb
-    execute conn "DELETE FROM project WHERE name LIKE ?" (Only name)
-    execute conn "DELETE FROM relationship WHERE parent LIKE ?" (Only name)
-    close conn
-
-insertProject :: Project -> IO ()
-insertProject project = do
-    conn <- openDb
-    execute conn "INSERT INTO project VALUES (?, ?, ?, ?, ?, ?)" project
-    close conn
-
-insertRelationship :: T.Text -> T.Text -> IO()
-insertRelationship parent child = do
-    conn <- openDb
-    execute conn "INSERT INTO relationship VALUES (?, ?)" [parent, child]
-    close conn
-
-selectReverseDependencies :: T.Text -> IO [T.Text]
-selectReverseDependencies projName = do
-    conn <- openDb
-    rels <- query conn "SELECT * FROM relationship WHERE child = ? GROUP BY parent, child ORDER BY parent" (Only projName)
-    close conn
-    return $ map relParent rels
-
-selectProjects :: T.Text -> IO [T.Text]
-selectProjects search = do
-    conn <- openDb
-    projs <- query conn "SELECT * FROM project WHERE name LIKE ? ORDER BY name" (Only search )
-    close conn
-    return $ map projName projs
-
-selectAllProjects :: IO [T.Text]
-selectAllProjects = selectProjects "%"
-
-selectProjectField :: (Project -> a) -> T.Text -> IO (Maybe a)
-selectProjectField field projName = do
-    conn <- openDb
-    projs <- query conn "SELECT * FROM project WHERE name = ?" (Only projName)
-    close conn
-    return $ if null projs then Nothing else Just . field $ head projs
-
-updateProjectDeployable :: T.Text -> Bool -> IO ()
-updateProjectDeployable projName v = do
-    conn <- openDb
-    execute conn "UPDATE project SET deployable = ? WHERE name = ?" [T.pack $ show v, projName]
-    close conn
+    mapM_ (insertRelationship projName) . fmap (fromJust . extractDepName) . xGetElements elName $ parseXML xml
 
 
 -- deployable reverse dependencies
