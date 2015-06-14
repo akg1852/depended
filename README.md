@@ -16,7 +16,7 @@ Depended is a command line tool, with the following options available:
 
 ```
 --clear             clear cache
---cached            use cached data, rather than querying github
+--update            update cached data, by querying github
 --search <query>    return results for specific project(s)
                     (% can be used as a wildcard)
 --immediate         show immediate reverse-dependencies

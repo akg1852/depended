@@ -258,7 +258,7 @@ getDeployableReverseDependencies proj = (go [proj]) . (delete proj) =<< selectAl
 main = do
     args <- getArgs
     when ("--clear" `elem` args) $ deleteProject "%"
-    when ("--cached" `notElem` args) getData
+    when ("--update" `elem` args) getData
 
     let search = case ("--search" `elemIndex` args) of
             Just i -> T.pack $ args !! succ i
