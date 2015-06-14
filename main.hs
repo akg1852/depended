@@ -11,7 +11,6 @@ import qualified Data.Text.IO as T.IO (putStrLn)
 import qualified Data.Vector as V
 import qualified Data.ByteString.Char8 as Char8
 import qualified Data.ByteString.Lazy.Char8 as LazyChar8
-import qualified Text.XML.Light as XML
 import Network.HTTP.Conduit
 import System.Console.ANSI
 
@@ -83,11 +82,9 @@ getData = do
     isDir o = (jString . fromJust $ jLookup "type" o) == "dir"
     projFile name ext = T.concat [name, ".", ext, "proj"]
     jNameIs name o = (jString . fromJust $ jLookup "name" o) == name
-
-getDependencies :: T.Text -> JObject -> T.Text -> (XML.Element -> Maybe T.Text) -> IO ()
-getDependencies projName file elName extractDepName = do
-    xml <- simpleHttp . T.unpack . jString . fromJust $ jLookup "download_url" file
-    mapM_ (insertRelationship projName) . fmap (fromJust . extractDepName) . xGetElements elName $ parseXML xml
+    getDependencies projName file elName extractDepName = do
+        xml <- simpleHttp . T.unpack . jString . fromJust $ jLookup "download_url" file
+        mapM_ (insertRelationship projName) . fmap (fromJust . extractDepName) . xGetElements elName $ parseXML xml
 
 
 -- deployable reverse dependencies
