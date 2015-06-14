@@ -1,18 +1,19 @@
 {-# LANGUAGE OverloadedStrings #-}
 
+import System.Environment
 import Control.Monad
 import System.IO
+import Network.HTTP.Conduit
+import System.Console.ANSI
+
 import Data.Maybe
 import Data.List
-import System.Environment
 import qualified Data.Foldable as Foldable
 import qualified Data.Text as T
 import qualified Data.Text.IO as T.IO (putStrLn)
 import qualified Data.Vector as V
 import qualified Data.ByteString.Char8 as Char8
 import qualified Data.ByteString.Lazy.Char8 as LazyChar8
-import Network.HTTP.Conduit
-import System.Console.ANSI
 
 import Model
 import Parse
@@ -118,23 +119,22 @@ main = do
     let getDeps = if ("--immediate" `elem` args)
         then selectReverseDependencies
         else getDeployableReverseDependencies
-    output search getDeps ("--plain" `elem` args)
+
+    projects <- selectProjects search
+    deps <- forM projects $ \p -> do { ds <- getDeps p; return (p, ds) }
+    outputToCLI (filter (not . null . snd) deps) ("--plain" `notElem` args)
 
 
 -- display
 
-output :: T.Text -> (T.Text -> IO [T.Text]) -> Bool -> IO ()
-output search getDeps isPlain = do
-    allProjects <- selectProjects search
-    forM_ allProjects $ \p -> do
-        deps <- getDeps p
-        when (not $ null deps) $ do
-            setColor Red
-            T.IO.putStrLn p
-            setColor Yellow
-            mapM_ (T.IO.putStrLn . T.cons '\t') deps
-            putStrLn ""
-            setColor White
+outputToCLI :: [(T.Text, [T.Text])] -> Bool -> IO ()
+outputToCLI projects color = forM_ projects $ \(p, ds) -> do
+    setColor Red
+    T.IO.putStrLn p
+    setColor Yellow
+    mapM_ (T.IO.putStrLn . T.cons '\t') ds
+    putStrLn ""
+    setColor White
   where 
-    setColor c = if isPlain then return () else setSGR [SetColor Foreground Dull c]
+    setColor c = when color $ setSGR [SetColor Foreground Dull c]
 
